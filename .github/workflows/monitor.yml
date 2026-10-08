@@ -1,0 +1,79 @@
+name: monitor
+
+on:
+  schedule:
+    # 日本時間 6:00〜翌0:00 を10分おき(cron は UTC。21〜23時と0〜14時 = JST 6〜23時台)
+    - cron: "*/10 21-23,0-14 * * *"
+  workflow_dispatch: # 手動実行(動作テスト用)
+
+permissions:
+  actions: write # 403/429 検出時に、このワークフロー自身を無効化するため
+  contents: read
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      # 前回の状態(満席/空き)を引き継ぐ。通知を「空きに変わった最初の1回だけ」にするため
+      - uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      # 本人情報は Secrets(CONFIG_JSON)から書き出す。リポジトリには置かない
+      - name: config.json を作成
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: printf '%s' "$CONFIG_JSON" > config.json
+
+      - name: 監視を1回実行
+        id: run
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          set +e
+          python monitor.py
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
+
+      # 403/429(終了コード3)なら、これ以上アクセスしないよう自動で無効化する
+      - name: アクセス制限を検出したので監視を停止
+        if: steps.run.outputs.code == '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable monitor --repo "$GITHUB_REPOSITORY"
+
+      - name: 異常終了ならジョブを失敗にする
+        if: steps.run.outputs.code != '0' && steps.run.outputs.code != '3'
+        run: exit 1

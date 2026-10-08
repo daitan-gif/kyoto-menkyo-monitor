@@ -1,0 +1,10 @@
+# 個人情報・秘密情報(絶対にコミットしない)
+config.json
+
+# 実行時に生成されるファイル(last_error.png には入力済みの個人情報が写る可能性がある)
+state.json
+monitor.log
+monitor.lock
+last_error.png
+__pycache__/
+*.pyc
